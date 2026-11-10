@@ -8,8 +8,6 @@ from urllib.parse import quote, urlencode
 
 SOURCE_URL = os.environ.get("SOURCE_URL", "https://vpn.voidgram.xyz/burmalda")
 OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "bur.txt")
-# 1 = base64 (стандартный формат подписки), 0 = обычный список ссылок
-BASE64_OUTPUT = os.environ.get("BASE64_OUTPUT", "1") == "1"
 USER_AGENT = os.environ.get("USER_AGENT", "Mozilla/5.0")
 
 BAD_ADDRESSES = {None, "", "127.0.0.1", "localhost", "0.0.0.0"}
@@ -22,7 +20,7 @@ def fetch(url):
 
 
 def load_configs(raw):
-    # на случай если отдадут base64
+    # на случай если источник отдаст base64
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -143,12 +141,8 @@ def main():
         print("Не удалось получить ни одной ссылки, bur.txt не трогаю", file=sys.stderr)
         sys.exit(1)
 
-    text = "\n".join(links)
-    if BASE64_OUTPUT:
-        text = base64.b64encode(text.encode()).decode()
-
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(text + "\n")
+        f.write("\n".join(links) + "\n")
 
     print(f"Готово: {len(links)} конфигов -> {OUTPUT_FILE}")
 
