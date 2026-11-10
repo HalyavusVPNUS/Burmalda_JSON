@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+import base64
+import json
+import os
+import sys
+import urllib.request
+from urllib.parse import quote, urlencode
+
+SOURCE_URL = os.environ.get("SOURCE_URL", "https://vpn.voidgram.xyz/burmalda")
+OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "bur.txt")
+# 1 = base64 (стандартный формат подписки), 0 = обычный список ссылок
+BASE64_OUTPUT = os.environ.get("BASE64_OUTPUT", "1") == "1"
+USER_AGENT = os.environ.get("USER_AGENT", "Mozilla/5.0")
+
+BAD_ADDRESSES = {None, "", "127.0.0.1", "localhost", "0.0.0.0"}
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode("utf-8", errors="replace").strip()
+
+
+def load_configs(raw):
+    # на случай если отдадут base64
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    if isinstance(data, dict):
+        data = [data]
+    return data
+
+
+def clean_name(name):
+    # убираем невидимые символы-заполнители (ㅤ и т.п.)
+    for ch in ("\u3164", "\u200b", "\u200e", "\u200f"):
+        name = name.replace(ch, "")
+    return " ".join(name.split()).strip() or "vless"
+
+
+def to_vless(cfg):
+    remarks = clean_name(cfg.get("remarks", "vless"))
+
+    for ob in cfg.get("outbounds", []):
+        if ob.get("protocol") != "vless":
+            continue
+        try:
+            vnext = ob["settings"]["vnext"][0]
+            user = vnext["users"][0]
+        except (KeyError, IndexError):
+            continue
+
+        address = vnext.get("address")
+        port = vnext.get("port")
+        uuid = user.get("id")
+        if address in BAD_ADDRESSES or not uuid or not port:
+            continue
+        if uuid.startswith("00000000-0000"):
+            continue
+
+        ss = ob.get("streamSettings", {})
+        network = ss.get("network", "tcp")
+        security = ss.get("security", "none")
+
+        params = {
+            "encryption": user.get("encryption", "none"),
+            "security": security,
+            "type": network,
+        }
+        if user.get("flow"):
+            params["flow"] = user["flow"]
+
+        if security == "tls":
+            tls = ss.get("tlsSettings", {})
+            if tls.get("serverName"):
+                params["sni"] = tls["serverName"]
+            if tls.get("fingerprint"):
+                params["fp"] = tls["fingerprint"]
+            if tls.get("alpn"):
+                params["alpn"] = ",".join(tls["alpn"])
+            if tls.get("allowInsecure"):
+                params["allowInsecure"] = "1"
+        elif security == "reality":
+            r = ss.get("realitySettings", {})
+            if r.get("serverName"):
+                params["sni"] = r["serverName"]
+            if r.get("fingerprint"):
+                params["fp"] = r["fingerprint"]
+            if r.get("publicKey"):
+                params["pbk"] = r["publicKey"]
+            if r.get("shortId"):
+                params["sid"] = r["shortId"]
+            if r.get("spiderX"):
+                params["spx"] = r["spiderX"]
+
+        if network == "xhttp":
+            x = ss.get("xhttpSettings", {})
+            if x.get("host"):
+                params["host"] = x["host"]
+            if x.get("path"):
+                params["path"] = x["path"]
+            if x.get("mode"):
+                params["mode"] = x["mode"]
+        elif network == "ws":
+            w = ss.get("wsSettings", {})
+            if w.get("path"):
+                params["path"] = w["path"]
+            host = (w.get("headers") or {}).get("Host")
+            if host:
+                params["host"] = host
+        elif network == "grpc":
+            g = ss.get("grpcSettings", {})
+            if g.get("serviceName"):
+                params["serviceName"] = g["serviceName"]
+        elif network == "tcp":
+            tcp = ss.get("tcpSettings", {})
+            if tcp.get("header", {}).get("type") == "http":
+                params["headerType"] = "http"
+
+        host_part = f"[{address}]" if ":" in address else address
+        query = urlencode(params, quote_via=quote, safe="")
+        return f"vless://{uuid}@{host_part}:{port}?{query}#{quote(remarks)}"
+
+    return None
+
+
+def main():
+    try:
+        configs = load_configs(fetch(SOURCE_URL))
+    except Exception as e:
+        print(f"Ошибка загрузки источника: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    links, seen = [], set()
+    for cfg in configs:
+        link = to_vless(cfg)
+        if link and link not in seen:
+            seen.add(link)
+            links.append(link)
+
+    if not links:
+        print("Не удалось получить ни одной ссылки, bur.txt не трогаю", file=sys.stderr)
+        sys.exit(1)
+
+    text = "\n".join(links)
+    if BASE64_OUTPUT:
+        text = base64.b64encode(text.encode()).decode()
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+    print(f"Готово: {len(links)} конфигов -> {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
