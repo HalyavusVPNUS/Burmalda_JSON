@@ -8,6 +8,7 @@ from urllib.parse import quote, urlencode
 
 SOURCE_URL = os.environ.get("SOURCE_URL", "https://vpn.voidgram.xyz/burmalda")
 OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "bur.txt")
+NAME_PREFIX = os.environ.get("NAME_PREFIX", "proxy")
 USER_AGENT = os.environ.get("USER_AGENT", "Mozilla/5.0")
 
 BAD_ADDRESSES = {None, "", "127.0.0.1", "localhost", "0.0.0.0"}
@@ -30,16 +31,8 @@ def load_configs(raw):
     return data
 
 
-def clean_name(name):
-    # убираем невидимые символы-заполнители (ㅤ и т.п.)
-    for ch in ("\u3164", "\u200b", "\u200e", "\u200f"):
-        name = name.replace(ch, "")
-    return " ".join(name.split()).strip() or "vless"
-
-
-def to_vless(cfg):
-    remarks = clean_name(cfg.get("remarks", "vless"))
-
+def to_vless_parts(cfg):
+    """Возвращает (ссылка_без_имени) или None."""
     for ob in cfg.get("outbounds", []):
         if ob.get("protocol") != "vless":
             continue
@@ -118,7 +111,7 @@ def to_vless(cfg):
 
         host_part = f"[{address}]" if ":" in address else address
         query = urlencode(params, quote_via=quote, safe="")
-        return f"vless://{uuid}@{host_part}:{port}?{query}#{quote(remarks)}"
+        return f"vless://{uuid}@{host_part}:{port}?{query}"
 
     return None
 
@@ -130,16 +123,21 @@ def main():
         print(f"Ошибка загрузки источника: {e}", file=sys.stderr)
         sys.exit(1)
 
-    links, seen = [], set()
+    base_links, seen = [], set()
     for cfg in configs:
-        link = to_vless(cfg)
+        link = to_vless_parts(cfg)
         if link and link not in seen:
             seen.add(link)
-            links.append(link)
+            base_links.append(link)
 
-    if not links:
+    if not base_links:
         print("Не удалось получить ни одной ссылки, bur.txt не трогаю", file=sys.stderr)
         sys.exit(1)
+
+    links = [
+        f"{link}#{quote(f'{NAME_PREFIX} {i}')}"
+        for i, link in enumerate(base_links, start=1)
+    ]
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(links) + "\n")
